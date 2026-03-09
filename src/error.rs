@@ -1,44 +1,25 @@
-use std::fmt;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum WebhookError {
+    #[error("template not found: {0}")]
     TemplateNotFound(String),
-    TemplateRender(handlebars::RenderError),
+
+    #[error("template render error: {0}")]
+    TemplateRender(#[from] handlebars::RenderError),
+
+    #[error("http error sending to {destination}: {source}")]
     Http {
         destination: String,
         source: reqwest::Error,
     },
-    Serialize(serde_json::Error),
+
+    #[error("serialization error: {0}")]
+    Serialize(#[from] serde_json::Error),
+
+    #[error("template registration error: {0}")]
+    TemplateRegister(#[from] handlebars::TemplateError),
+
+    #[error("dispatcher channel closed")]
     ChannelClosed,
-}
-
-impl fmt::Display for WebhookError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TemplateNotFound(name) => write!(f, "template not found: {name}"),
-            Self::TemplateRender(e) => write!(f, "template render error: {e}"),
-            Self::Http {
-                destination,
-                source,
-            } => {
-                write!(f, "http error sending to {destination}: {source}")
-            }
-            Self::Serialize(e) => write!(f, "serialization error: {e}"),
-            Self::ChannelClosed => write!(f, "dispatcher channel closed"),
-        }
-    }
-}
-
-impl std::error::Error for WebhookError {}
-
-impl From<handlebars::RenderError> for WebhookError {
-    fn from(e: handlebars::RenderError) -> Self {
-        Self::TemplateRender(e)
-    }
-}
-
-impl From<serde_json::Error> for WebhookError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Serialize(e)
-    }
 }

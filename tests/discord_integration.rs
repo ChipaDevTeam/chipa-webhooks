@@ -1,4 +1,4 @@
-use chipa_webhooks::{Destination, Discord, WebhookDispatcher, WithHints};
+use chipa_webhooks::{Destination, Discord, Telegram, WebhookDispatcher, WithHints};
 use serde::Serialize;
 
 const COLOR_BUY: u32 = 0x2ecc71;
@@ -48,6 +48,10 @@ async fn test_discord_trading_signal_and_random() {
         .destination(Destination::new(
             "discord-test",
             Discord::new(webhook_url).with_username("Chipa Webhooks Test"),
+        ))
+        .destination(Destination::new(
+            "telegram-test",
+            Telegram::new("8671414424:AAEHU4k3ec2Z7u-v13W0yFE6Mngxzf2c2Wc", 8671414424),
         ))
         .on_error(|e| eprintln!("webhook error: {e}"))
         .build()
@@ -118,5 +122,147 @@ async fn test_discord_trading_signal_and_random() {
         .expect("failed to send random event");
 
     // Graceful shutdown: drains the queue and waits for all HTTP requests to finish
+    dispatcher.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_runtime_template_mutations() {
+    dotenvy::dotenv().ok();
+
+    let webhook_url = std::env::var("DISCORD_WEBHOOK").expect("DISCORD_WEBHOOK not set in .env");
+
+    // --- Phase 1: register 3 templates at build time and send one message each ---
+
+    let dispatcher = WebhookDispatcher::builder()
+        .template("alpha", "🅰️ **Alpha** — {{name}}: {{value}}")
+        .template("beta", "🅱️ **Beta** — {{name}}: {{value}}")
+        .template("gamma", "🅾️ **Gamma** — {{name}}: {{value}}")
+        .destination(Destination::new(
+            "discord",
+            Discord::new(&webhook_url).with_username("Template Mutation Test"),
+        ))
+        .on_error(|e| eprintln!("webhook error: {e}"))
+        .build()
+        .expect("failed to build dispatcher");
+
+    #[derive(Serialize)]
+    struct Payload {
+        name: String,
+        value: String,
+    }
+
+    dispatcher
+        .send_with_template_and_hints(
+            "alpha",
+            &Payload {
+                name: "alpha-1".into(),
+                value: "original".into(),
+            },
+            WithHints::new()
+                .d_title("Phase 1 — Alpha")
+                .d_color(0x3498db),
+        )
+        .await
+        .expect("failed to send alpha");
+
+    dispatcher
+        .send_with_template_and_hints(
+            "beta",
+            &Payload {
+                name: "beta-1".into(),
+                value: "original".into(),
+            },
+            WithHints::new().d_title("Phase 1 — Beta").d_color(0x9b59b6),
+        )
+        .await
+        .expect("failed to send beta");
+
+    dispatcher
+        .send_with_template_and_hints(
+            "gamma",
+            &Payload {
+                name: "gamma-1".into(),
+                value: "original".into(),
+            },
+            WithHints::new()
+                .d_title("Phase 1 — Gamma")
+                .d_color(0xe67e22),
+        )
+        .await
+        .expect("failed to send gamma");
+
+    // Flush ensures all Phase 1 HTTP requests complete before we mutate templates
+    dispatcher.flush().await.expect("failed to flush");
+
+    // --- Phase 2: remove gamma, update alpha + beta, add delta, send all three ---
+
+    dispatcher.remove_template("gamma");
+
+    dispatcher
+        .update_template("alpha", "🅰️ **Alpha (updated)** — {{name}}: {{value}} ✏️")
+        .expect("failed to update alpha");
+
+    dispatcher
+        .update_template("beta", "🅱️ **Beta (updated)** — {{name}}: {{value}} ✏️")
+        .expect("failed to update beta");
+
+    dispatcher
+        .register_template("delta", "🔷 **Delta (new)** — {{name}}: {{value}} 🆕")
+        .expect("failed to register delta");
+
+    dispatcher
+        .send_with_template_and_hints(
+            "alpha",
+            &Payload {
+                name: "alpha-2".into(),
+                value: "updated".into(),
+            },
+            WithHints::new()
+                .d_title("Phase 2 — Alpha updated")
+                .d_color(0x2ecc71),
+        )
+        .await
+        .expect("failed to send updated alpha");
+
+    dispatcher
+        .send_with_template_and_hints(
+            "beta",
+            &Payload {
+                name: "beta-2".into(),
+                value: "updated".into(),
+            },
+            WithHints::new()
+                .d_title("Phase 2 — Beta updated")
+                .d_color(0x2ecc71),
+        )
+        .await
+        .expect("failed to send updated beta");
+
+    dispatcher
+        .send_with_template_and_hints(
+            "delta",
+            &Payload {
+                name: "delta-1".into(),
+                value: "brand new".into(),
+            },
+            WithHints::new()
+                .d_title("Phase 2 — Delta new")
+                .d_color(0x1abc9c),
+        )
+        .await
+        .expect("failed to send delta");
+
+    // Verify gamma is gone — should return an error, not panic
+    let result = dispatcher
+        .send_with_template(
+            "gamma",
+            &Payload {
+                name: "ghost".into(),
+                value: "should fail".into(),
+            },
+        )
+        .await;
+    assert!(result.is_err(), "gamma should have been removed");
+
     dispatcher.shutdown().await;
 }

@@ -14,9 +14,9 @@ use crate::{
     template::TemplateEngine,
 };
 
-struct DispatchJob {
-    template_name: String,
-    data: Value,
+enum DispatchJob {
+    Send { template_name: String, data: Value },
+    Flush { done_tx: oneshot::Sender<()> },
 }
 
 pub struct Destination {
@@ -37,6 +37,7 @@ pub struct WebhookDispatcher {
     sender: AsyncSender<DispatchJob>,
     done_rx: oneshot::Receiver<()>,
     matcher: MatcherRegistry,
+    engine: TemplateEngine,
 }
 
 impl WebhookDispatcher {
@@ -51,6 +52,21 @@ impl WebhookDispatcher {
         rule: impl Fn(&T) -> &'static str + Send + Sync + 'static,
     ) {
         self.matcher.register(rule);
+    }
+
+    /// Register a new template at runtime.
+    pub fn register_template(&self, name: &str, template: &str) -> Result<(), WebhookError> {
+        self.engine.register(name, template)
+    }
+
+    /// Overwrite an existing template at runtime without restarting the dispatcher.
+    pub fn update_template(&self, name: &str, template: &str) -> Result<(), WebhookError> {
+        self.engine.update(name, template)
+    }
+
+    /// Remove a template at runtime.
+    pub fn remove_template(&self, name: &str) {
+        self.engine.remove(name);
     }
 
     /// Send using the internal matcher to resolve the template name.
@@ -89,6 +105,18 @@ impl WebhookDispatcher {
             .await
     }
 
+    /// Waits for all currently queued jobs to finish processing before returning.
+    /// Use this between phases where template mutations depend on prior sends completing.
+    pub async fn flush(&self) -> Result<(), WebhookError> {
+        let (done_tx, done_rx) = oneshot::channel();
+        self.sender
+            .send(DispatchJob::Flush { done_tx })
+            .await
+            .map_err(|_| WebhookError::ChannelClosed)?;
+        let _ = done_rx.await;
+        Ok(())
+    }
+
     /// Closes the send side of the channel, drains all queued jobs, then resolves.
     /// Call this during graceful shutdown to ensure no messages are lost.
     pub async fn shutdown(self) {
@@ -102,6 +130,10 @@ impl WebhookDispatcher {
         event: &T,
         hints: Option<WithHints>,
     ) -> Result<(), WebhookError> {
+        if !self.engine.has_template(&template_name) {
+            return Err(WebhookError::TemplateNotFound(template_name));
+        }
+
         let mut data = serde_json::to_value(event)?;
 
         if let Some(h) = hints {
@@ -111,7 +143,7 @@ impl WebhookDispatcher {
         }
 
         self.sender
-            .send(DispatchJob {
+            .send(DispatchJob::Send {
                 template_name,
                 data,
             })
@@ -164,8 +196,8 @@ impl WebhookDispatcherBuilder {
         self
     }
 
-    pub fn build(self) -> Result<WebhookDispatcher, handlebars::TemplateError> {
-        let mut engine = TemplateEngine::new();
+    pub fn build(self) -> Result<WebhookDispatcher, WebhookError> {
+        let engine = TemplateEngine::new();
         for (name, template) in &self.templates {
             engine.register(name, template)?;
         }
@@ -180,7 +212,7 @@ impl WebhookDispatcherBuilder {
 
         tokio::spawn(dispatch_loop(
             receiver,
-            Arc::new(engine),
+            engine.clone(),
             destinations,
             on_error,
             done_tx,
@@ -190,6 +222,7 @@ impl WebhookDispatcherBuilder {
             sender,
             done_rx,
             matcher,
+            engine,
         })
     }
 }
@@ -202,7 +235,7 @@ impl Default for WebhookDispatcherBuilder {
 
 async fn dispatch_loop(
     receiver: AsyncReceiver<DispatchJob>,
-    engine: Arc<TemplateEngine>,
+    engine: TemplateEngine,
     destinations: Arc<Vec<Destination>>,
     on_error: Option<Arc<dyn Fn(WebhookError) + Send + Sync>>,
     done_tx: oneshot::Sender<()>,
@@ -210,38 +243,47 @@ async fn dispatch_loop(
     let client = reqwest::Client::new();
 
     while let Ok(job) = receiver.recv().await {
-        let mut data = job.data;
-        let hints = extract_hints(&mut data);
-
-        let rendered = match engine.render(&job.template_name, &data) {
-            Ok(r) => r,
-            Err(e) => {
-                report_error(&on_error, e);
-                continue;
+        match job {
+            DispatchJob::Flush { done_tx } => {
+                let _ = done_tx.send(());
             }
-        };
+            DispatchJob::Send {
+                template_name,
+                mut data,
+            } => {
+                let hints = extract_hints(&mut data);
 
-        let rendered = Arc::new(rendered);
-        let hints = Arc::new(hints);
+                let rendered = match engine.render(&template_name, &data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        report_error(&on_error, e);
+                        continue;
+                    }
+                };
 
-        let futs = destinations.iter().map(|dest| {
-            let client = client.clone();
-            let rendered = Arc::clone(&rendered);
-            let hints = Arc::clone(&hints);
-            let dest_name = dest.name.clone();
-            let on_error = on_error.clone();
-            let platform = Arc::clone(&dest.platform);
+                let rendered = Arc::new(rendered);
+                let hints = Arc::new(hints);
 
-            async move {
-                if let Err(e) =
-                    post(&client, platform.as_ref(), &rendered, &hints, &dest_name).await
-                {
-                    report_error(&on_error, e);
-                }
+                let futs = destinations.iter().map(|dest| {
+                    let client = client.clone();
+                    let rendered = Arc::clone(&rendered);
+                    let hints = Arc::clone(&hints);
+                    let dest_name = dest.name.clone();
+                    let on_error = on_error.clone();
+                    let platform = Arc::clone(&dest.platform);
+
+                    async move {
+                        if let Err(e) =
+                            post(&client, platform.as_ref(), &rendered, &hints, &dest_name).await
+                        {
+                            report_error(&on_error, e);
+                        }
+                    }
+                });
+
+                join_all(futs).await;
             }
-        });
-
-        join_all(futs).await;
+        }
     }
 
     // Channel drained and closed — signal graceful shutdown complete.
