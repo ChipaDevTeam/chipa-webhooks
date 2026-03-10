@@ -3,6 +3,9 @@ use serde_json::{Map, Value};
 use crate::error::WebhookError;
 
 pub mod discord;
+pub mod generic;
+pub mod ntfy;
+pub mod slack;
 pub mod telegram;
 
 pub trait Platform: Send + Sync {

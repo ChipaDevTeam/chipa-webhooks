@@ -11,6 +11,9 @@ pub use hints::WithHints;
 pub use matcher::MatcherRegistry;
 pub use platform::{
     discord::Discord,
+    generic::Generic,
+    ntfy::Ntfy,
+    slack::Slack,
     telegram::{ParseMode, Telegram},
 };
 pub use template::TemplateEngine;

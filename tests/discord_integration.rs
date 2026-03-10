@@ -1,4 +1,4 @@
-use chipa_webhooks::{Destination, Discord, Telegram, WebhookDispatcher, WithHints};
+use chipa_webhooks::{Destination, Discord, Generic, Telegram, WebhookDispatcher, WithHints};
 use serde::Serialize;
 
 const COLOR_BUY: u32 = 0x2ecc71;
@@ -263,6 +263,82 @@ async fn test_runtime_template_mutations() {
         )
         .await;
     assert!(result.is_err(), "gamma should have been removed");
+
+    dispatcher.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_multi_platform_fanout() {
+    dotenvy::dotenv().ok();
+
+    let discord_url = std::env::var("DISCORD_WEBHOOK").expect("DISCORD_WEBHOOK not set in .env");
+    let webhook_site_url =
+        std::env::var("WEBHOOK_SITE_URL").expect("WEBHOOK_SITE_URL not set in .env");
+
+    #[derive(Serialize)]
+    struct Signal {
+        asset: String,
+        action: String,
+        entry_price: f64,
+        timeframe: String,
+        note: String,
+    }
+
+    let mut dispatcher = WebhookDispatcher::builder()
+        .template(
+            "signal",
+            "**{{action}}** — {{asset}}\nEntry: `{{entry_price}}`\nTimeframe: {{timeframe}}\nNote: {{note}}",
+        )
+        .destination(Destination::new(
+            "discord",
+            Discord::new(discord_url).with_username("Chipa Fan-out Test"),
+        ))
+        .destination(Destination::new(
+            "webhook-site",
+            Generic::new(webhook_site_url).with_body_key("content"),
+        ))
+        .on_error(|e| eprintln!("fanout error: {e}"))
+        .build()
+        .expect("failed to build dispatcher");
+
+    dispatcher.register_rule(|s: &Signal| match s.action.as_str() {
+        "Buy" | "StrongBuy" => "signal",
+        _ => "signal",
+    });
+
+    // Message 1 — Buy signal, sent to Discord (with embed color) and webhook.site simultaneously
+    dispatcher
+        .send_with_hints(
+            &Signal {
+                asset: "BTCUSDT".into(),
+                action: "Buy".into(),
+                entry_price: 67_420.50,
+                timeframe: "15m".into(),
+                note: "fan-out test — should appear on Discord AND webhook.site".into(),
+            },
+            WithHints::new()
+                .d_color(0x2ecc71)
+                .d_title("📈 BUY — BTCUSDT"),
+        )
+        .await
+        .expect("failed to send buy signal");
+
+    // Message 2 — Sell signal
+    dispatcher
+        .send_with_hints(
+            &Signal {
+                asset: "#EURUSD_otc".into(),
+                action: "Sell".into(),
+                entry_price: 1.08210,
+                timeframe: "5m".into(),
+                note: "second fan-out message".into(),
+            },
+            WithHints::new()
+                .d_color(0xe74c3c)
+                .d_title("📉 SELL — #EURUSD_otc"),
+        )
+        .await
+        .expect("failed to send sell signal");
 
     dispatcher.shutdown().await;
 }
