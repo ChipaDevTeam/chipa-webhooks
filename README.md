@@ -42,7 +42,7 @@ A fast, non-blocking webhook dispatch crate with a handlebars-powered template e
 
 ```toml
 [dependencies]
-chipa-webhooks = "0.1"
+chipa-webhooks = "0.2"
 ```
 
 ## Quick Start
@@ -232,6 +232,34 @@ dispatcher.remove_template("old");
 dispatcher.send_with_template("report", &event).await.unwrap();
 dispatcher.send_with_template("alert",  &other).await.unwrap();
 ```
+
+## Sync hosts, rate limits and retries (0.2)
+
+```rust
+// No tokio runtime on the caller's side: the dispatcher owns a thread with its own.
+let d = WebhookDispatcher::builder()
+    .template("default", "{{text}}")
+    .destination(Destination::new("discord", Discord::new(url).with_thread_id("123")))
+    .timeout(Duration::from_secs(5))            // per request, default 5 s; redirects are never followed
+    .retry(RetryPolicy::default())              // 429 (Retry-After header, then body) and 5xx
+    .spawn_runtime()?;
+
+d.try_send(&event)?;                            // never blocks; Err(QueueFull) + `dropped` count when full
+d.flush_blocking(Duration::from_secs(2))?;
+println!("{:?}", d.stats()["discord"]);         // sent / failed / dropped / retried / coalesced
+d.shutdown_blocking(Duration::from_secs(8))?;
+```
+
+* Each destination has its own worker, queue and rate limiter (`Platform::rate_limits`).
+  Discord: 30 per 60 s and 5 per 2 s, plus `X-RateLimit-Remaining`/`Reset-After`.
+* If a worker has to wait on a limit and several payloads are queued, `Platform::coalesce`
+  may merge them. Discord: up to 10 embeds (6000 chars) per message plus `+k more`.
+* Non-2xx replies are reported to `on_error` as `WebhookError::Status` (no URL).
+  Webhook tokens are redacted in errors and in `Debug` (`redact_url`).
+* Discord: typed `DiscordEmbed` (title, description, url, color, fields, footer, timestamp, author),
+  Discord's length limits enforced with `…`, `allowed_mentions: {"parse": []}` on every payload
+  (override with `with_allowed_mentions`), `/api/v10/` endpoint. Hints: `d_url`, `d_footer`,
+  `d_timestamp`, `d_author`, `d_field`, `d_embed`.
 
 ## Graceful Shutdown
 

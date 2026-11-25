@@ -1,0 +1,11 @@
+[bindings.python]
+cdylib_name = "chipa_webhooks"
+
+[bindings.kotlin]
+package_name = "io.chipawebhooks"
+
+[bindings.swift]
+module_name = "ChipaWebhooks"
+
+[bindings.java]
+package_name = "io.chipawebhooks"

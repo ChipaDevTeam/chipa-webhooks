@@ -21,6 +21,60 @@ impl WithHints {
         self
     }
 
+    pub fn d_url(mut self, url: impl Into<String>) -> Self {
+        self.map
+            .insert("__d_url".to_owned(), Value::String(url.into()));
+        self
+    }
+
+    pub fn d_footer(mut self, text: impl Into<String>) -> Self {
+        self.map
+            .insert("__d_footer".to_owned(), Value::String(text.into()));
+        self
+    }
+
+    /// ISO 8601 timestamp, e.g. `2026-11-25T12:00:00Z`.
+    pub fn d_timestamp(mut self, timestamp: impl Into<String>) -> Self {
+        self.map
+            .insert("__d_timestamp".to_owned(), Value::String(timestamp.into()));
+        self
+    }
+
+    pub fn d_author(mut self, name: impl Into<String>) -> Self {
+        self.map
+            .insert("__d_author".to_owned(), Value::String(name.into()));
+        self
+    }
+
+    /// Appends an embed field. Can be called repeatedly.
+    pub fn d_field(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        inline: bool,
+    ) -> Self {
+        let field =
+            serde_json::json!({ "name": name.into(), "value": value.into(), "inline": inline });
+        match self
+            .map
+            .entry("__d_fields".to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
+            Value::Array(a) => a.push(field),
+            other => *other = Value::Array(vec![field]),
+        }
+        self
+    }
+
+    /// Sets a whole typed embed; the rendered template text becomes its
+    /// description unless the embed already has one. Other `d_*` hints override.
+    pub fn d_embed(mut self, embed: crate::platform::discord::DiscordEmbed) -> Self {
+        if let Ok(v) = serde_json::to_value(embed) {
+            self.map.insert("__d_embed".to_owned(), v);
+        }
+        self
+    }
+
     pub fn tg_silent(mut self) -> Self {
         self.map.insert("__tg_silent".to_owned(), Value::Bool(true));
         self

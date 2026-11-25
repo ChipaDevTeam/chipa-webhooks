@@ -1,0 +1,108 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-rust:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt -- --check
+
+      - name: Run Core Tests
+        run: cargo test --verbose
+
+      - name: Run FFI Tests
+        run: cargo test --all-features --verbose
+        working-directory: webhooks-uniffi
+
+  build-ffi:
+    name: Build Shared Libraries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build FFI Release
+        run: cargo build --release --all-features
+        working-directory: webhooks-uniffi
+
+      - name: Upload Linux Artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipa-webhooks-linux
+          path: webhooks-uniffi/target/release/libchipa_webhooks.so
+
+      - name: Upload macOS Artifact
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipa-webhooks-macos
+          path: webhooks-uniffi/target/release/libchipa_webhooks.dylib
+
+      - name: Upload Windows Artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipa-webhooks-windows
+          path: webhooks-uniffi/target/release/chipa_webhooks.dll
+
+  generate-bindings:
+    name: Generate UniFFI Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Debug FFI (for bindgen)
+        run: cargo build --all-features
+        working-directory: webhooks-uniffi
+
+      - name: Generate Python Bindings
+        run: cargo run --bin uniffi-bindgen --features bindgen -- generate --library target/debug/libchipa_webhooks.so --language python --out-dir bindings/python
+        working-directory: webhooks-uniffi
+
+      - name: Generate Kotlin Bindings
+        run: cargo run --bin uniffi-bindgen --features bindgen -- generate --library target/debug/libchipa_webhooks.so --language kotlin --out-dir bindings/kotlin
+        working-directory: webhooks-uniffi
+
+      - name: Generate Swift Bindings
+        run: cargo run --bin uniffi-bindgen --features bindgen -- generate --library target/debug/libchipa_webhooks.so --language swift --out-dir bindings/swift
+        working-directory: webhooks-uniffi
+
+      - name: Upload Generated Bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-bindings
+          path: webhooks-uniffi/bindings/

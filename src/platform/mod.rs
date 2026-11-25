@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::error::WebhookError;
+use crate::{limiter::RateLimit, redact::redact_url};
 
 pub mod discord;
 pub mod generic;
@@ -11,31 +11,21 @@ pub mod telegram;
 pub trait Platform: Send + Sync {
     fn build_payload(&self, rendered: &str, hints: &Map<String, Value>) -> Value;
     fn endpoint(&self) -> &str;
-}
 
-pub async fn post(
-    client: &reqwest::Client,
-    platform: &dyn Platform,
-    rendered: &str,
-    hints: &Map<String, Value>,
-    destination_name: &str,
-) -> Result<(), WebhookError> {
-    let payload = platform.build_payload(rendered, hints);
-
-    let response = client
-        .post(platform.endpoint())
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| WebhookError::Http {
-            destination: destination_name.to_owned(),
-            source: e,
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        tracing::warn!(destination = destination_name, status = %status, "webhook returned non-2xx");
+    /// Rate-limit buckets enforced by the destination's worker. Default: none.
+    fn rate_limits(&self) -> Vec<RateLimit> {
+        Vec::new()
     }
 
-    Ok(())
+    /// Merge several queued payloads into one message. Called only when the
+    /// worker had to wait on a rate-limit bucket and more than one payload is
+    /// queued. Return `None` (default) to deliver them one by one instead.
+    fn coalesce(&self, _batch: &[Value]) -> Option<Value> {
+        None
+    }
+
+    /// The endpoint with secrets removed; safe to log.
+    fn redacted_endpoint(&self) -> String {
+        redact_url(self.endpoint())
+    }
 }

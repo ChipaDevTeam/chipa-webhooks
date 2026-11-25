@@ -1,0 +1,13 @@
+language = "C"
+
+[export]
+exclude = []
+
+[parse]
+parse_deps = false
+
+[parse.expand]
+features = ["c"]
+
+[fn]
+prefix = ""
